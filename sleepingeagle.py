@@ -1,8 +1,6 @@
 import time
 import logging
 from binance.spot import Spot
-from binance.websocket.spot.websocket_stream import SpotWebsocketStreamClient
-import threading
 import requests
 from dotenv import load_dotenv
 import os
@@ -17,8 +15,8 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 SYMBOL = 'BTCUSDT'
 LOWER_PRICE = 62000.0
 UPPER_PRICE = 70000.0
-NUM_GRIDS = 4
-INVEST_PER_GRID = 21.5
+NUM_GRIDS = 2
+INVEST_PER_GRID = 43.0
 MIN_PROFIT_PERCENT = 0.85
 
 SHIFT_THRESHOLD = 6.0
@@ -79,20 +77,7 @@ def shift_grid(direction):
     logging.info(f"Грид сдвинут {direction}")
     send_telegram(f"Грид сдвинут {direction}")
 
-def on_message(msg):
-    if msg.get('e') == 'executionReport' and msg.get('X') == 'FILLED':
-        price = float(msg['p'])
-        if price in active_orders:
-            del active_orders[price]
-        place_grid()
-
-def start_ws():
-    ws = SpotWebsocketStreamClient(on_message=on_message)
-    ws.user_data_stream()
-
-threading.Thread(target=start_ws, daemon=True).start()
-
-logging.info(f"БОТ ЗАПУЩЕН | 86$ | 4 грида")
+logging.info(f"БОТ ЗАПУЩЕН | 86$ | 2 грида по 43$")
 
 while True:
     try:
