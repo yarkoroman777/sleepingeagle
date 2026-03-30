@@ -1,6 +1,4 @@
-# ====================== GRID BOT (BTCUSDT) - ИСПРАВЛЕННЫЙ ======================
-# Исправлена ошибка LOT_SIZE, читает .env, 3 грида, 20 USDT, 0.8%
-
+# ====================== GRID BOT (BTCUSDT) - 2 ГРИДА ======================
 import os
 import time
 import logging
@@ -21,17 +19,17 @@ if not API_KEY or not API_SECRET:
 
 # ==================== ПАРАМЕТРЫ ====================
 SYMBOL = 'BTCUSDT'
-LOWER_PRICE = 65000.0
+LOWER_PRICE = 66500.0
 UPPER_PRICE = 70000.0
-NUM_GRIDS = 3
-INVEST_PER_GRID = 20.0          # USDT на один уровень
-MIN_PROFIT_PERCENT = 0.8        # 0.8% прибыли
+NUM_GRIDS = 2                     # только два грида
+INVEST_PER_GRID = 20.0
+MIN_PROFIT_PERCENT = 0.8
 
 # ==================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s')
 client = Spot(api_key=API_KEY, api_secret=API_SECRET)
 
-# Получаем информацию о фильтрах для символа
+# Получаем фильтры для символа
 symbol_info = client.exchange_info()
 for s in symbol_info['symbols']:
     if s['symbol'] == SYMBOL:
@@ -71,7 +69,6 @@ def place_grid():
         if price in active_orders:
             continue
 
-        # Количество с учётом LOT_SIZE
         raw_qty = INVEST_PER_GRID / price
         qty = round_step(raw_qty, step_size)
         if qty < min_qty:
@@ -136,7 +133,7 @@ def on_message(msg):
 
 def start_websocket():
     ws = SpotWebsocketStreamClient(on_message=on_message)
-    ws.user_data_stream()
+    ws.start()            # исправленный вызов
 
 threading.Thread(target=start_websocket, daemon=True).start()
 
