@@ -5,7 +5,7 @@ import time
 import logging
 import threading
 import requests
-from flask import Flask, render_template_string, request, redirect, url_for, jsonify
+from flask import Flask, render_template_string, request, redirect, url_for
 from dotenv import load_dotenv
 from binance.spot import Spot
 from binance.websocket.spot.websocket_stream import SpotWebsocketStreamClient
@@ -19,9 +19,9 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 if not API_KEY or not API_SECRET:
     raise Exception("API_KEY или API_SECRET не найдены")
 
-# === НАСТРОЙКИ (по умолчанию, можно менять через веб-интерфейс) ===
+# === НАСТРОЙКИ ===
 SYMBOL = 'BTCUSDT'
-LOWER_PRICE = 67500.0
+LOWER_PRICE = 68000.0
 UPPER_PRICE = 70000.0
 NUM_GRIDS = 2
 INVEST_PER_GRID = 40.0
@@ -57,9 +57,9 @@ def send_telegram(message):
     except:
         pass
 
-# === Глобальные переменные для состояния бота ===
-active_orders = {}      # цена -> orderId
-buy_positions = {}      # цена_покупки -> {'qty': float, 'sell_price': float, 'sell_order_id': int}
+# === Глобальные переменные ===
+active_orders = {}
+buy_positions = {}
 bot_running = True
 log_messages = []
 
@@ -70,30 +70,36 @@ def add_log(msg):
         log_messages.pop(0)
 
 def recalc_grid():
-    """Пересчитывает уровни грида на основе текущих настроек."""
     global grid_levels
     step_price = (UPPER_PRICE - LOWER_PRICE) / (NUM_GRIDS - 1)
     grid_levels = [round(LOWER_PRICE + i * step_price, 2) for i in range(NUM_GRIDS)]
     add_log(f"Грид пересчитан: {grid_levels}")
 
-recalc_grid()  # первоначальный расчёт
+recalc_grid()
 
-def get_free_usdt():
-    """Возвращает свободные USDT (с учётом заблокированных)."""
+def get_balances():
+    """Возвращает словарь с балансами USDT и BTC."""
     account = client.account()
+    result = {'USDT_free': 0, 'USDT_locked': 0, 'BTC_free': 0, 'BTC_locked': 0}
     for asset in account['balances']:
         if asset['asset'] == 'USDT':
-            free = float(asset['free'])
-            locked = float(asset['locked'])
-            return free - locked
-    return 0.0
+            result['USDT_free'] = float(asset['free'])
+            result['USDT_locked'] = float(asset['locked'])
+        elif asset['asset'] == 'BTC':
+            result['BTC_free'] = float(asset['free'])
+            result['BTC_locked'] = float(asset['locked'])
+    return result
+
+def get_free_usdt():
+    """Возвращает свободные USDT (без заблокированных под ордера)."""
+    balances = get_balances()
+    return balances['USDT_free']
 
 def get_current_price():
     ticker = client.ticker_price(SYMBOL)
     return float(ticker['price'])
 
 def cancel_all_orders():
-    """Отменяет все открытые ордера по паре."""
     try:
         orders = client.get_open_orders(symbol=SYMBOL)
         for o in orders:
@@ -105,7 +111,6 @@ def cancel_all_orders():
         add_log(f"Ошибка при отмене ордеров: {e}")
 
 def place_grid():
-    """Выставляет BUY ордера на все уровни, которые ниже текущей цены."""
     current = get_current_price()
     free_usdt = get_free_usdt()
 
@@ -136,19 +141,15 @@ def place_grid():
             active_orders[price] = order['orderId']
             add_log(f"✅ BUY размещён на {price}, qty={qty}")
             send_telegram(f"✅ BUY размещён на {price}, qty={qty}")
-            free_usdt -= INVEST_PER_GRID   # локально уменьшаем, чтобы не выставить два ордера за раз
+            free_usdt -= INVEST_PER_GRID
         except Exception as e:
             add_log(f"Ошибка при размещении BUY на {price}: {e}")
 
 def check_orders():
-    """Проверяет статусы ордеров (через REST, без WebSocket)."""
-    # Проверяем BUY ордера
     for price, oid in list(active_orders.items()):
         try:
             order = client.get_order(symbol=SYMBOL, orderId=oid)
-            status = order['status']
-            if status == 'FILLED':
-                # Ордер исполнился
+            if order['status'] == 'FILLED':
                 qty = float(order['executedQty'])
                 sell_price = round(price * (1 + MIN_PROFIT_PERCENT / 100), 2)
                 buy_positions[price] = {
@@ -160,7 +161,6 @@ def check_orders():
                 add_log(f"📥 BUY исполнен на {price}, qty={qty}, готовим SELL на {sell_price}")
                 send_telegram(f"📥 BUY исполнен на {price}, готовим SELL на {sell_price}")
 
-                # Выставляем SELL ордер
                 sell_order = client.new_order(
                     symbol=SYMBOL,
                     side='SELL',
@@ -173,13 +173,12 @@ def check_orders():
                 active_orders[sell_price] = sell_order['orderId']
                 add_log(f"💰 SELL размещён на {sell_price} (+{MIN_PROFIT_PERCENT}%)")
                 send_telegram(f"💰 SELL размещён на {sell_price} (+{MIN_PROFIT_PERCENT}%)")
-            elif status in ('CANCELLED', 'EXPIRED'):
+            elif order['status'] in ('CANCELLED', 'EXPIRED'):
                 del active_orders[price]
                 add_log(f"❌ BUY ордер на {price} отменён/истёк")
         except Exception as e:
             add_log(f"Ошибка при проверке BUY ордера {price}: {e}")
 
-    # Проверяем SELL ордера по позициям
     for buy_price, pos in list(buy_positions.items()):
         if pos['sell_order_id'] is None:
             continue
@@ -197,7 +196,6 @@ def check_orders():
             add_log(f"Ошибка при проверке SELL ордера {pos['sell_price']}: {e}")
 
 def bot_loop():
-    global bot_running
     while bot_running:
         try:
             check_orders()
@@ -232,11 +230,13 @@ HTML_TEMPLATE = '''
 <div class="container">
     <h1>🤖 Grid Bot Controller</h1>
     <div class="card">
-        <h2>📊 Статус</h2>
+        <h2>📊 Балансы</h2>
+        <p><strong>USDT (общий):</strong> {{ usdt_total }}<br>
+        <strong>USDT (свободный):</strong> {{ usdt_free }}<br>
+        <strong>USDT (заблокирован):</strong> {{ usdt_locked }}</p>
+        <p><strong>BTC (свободный):</strong> {{ btc_free }}<br>
+        <strong>BTC (заблокирован):</strong> {{ btc_locked }}</p>
         <p>Текущая цена BTC: <strong>{{ price }} USDT</strong></p>
-        <p>Свободно USDT: <strong>{{ free }} USDT</strong></p>
-        <p>Активных BUY ордеров: {{ buys|length }}</p>
-        <p>Открытых позиций: {{ positions|length }}</p>
     </div>
     <div class="card">
         <h2>⚙️ Настройки бота</h2>
@@ -294,13 +294,18 @@ HTML_TEMPLATE = '''
 @app.route('/')
 def index():
     price = get_current_price()
-    free = get_free_usdt()
+    balances = get_balances()
     buys = [{'price': p, 'order_id': oid} for p, oid in active_orders.items()]
     positions = [{'buy_price': bp, 'qty': pos['qty'], 'sell_price': pos['sell_price'], 'sell_order_id': pos['sell_order_id']}
                  for bp, pos in buy_positions.items()]
     logs = log_messages[-20:]
     return render_template_string(HTML_TEMPLATE,
-        price=price, free=free, buys=buys, positions=positions,
+        usdt_total=balances['USDT_free'] + balances['USDT_locked'],
+        usdt_free=balances['USDT_free'],
+        usdt_locked=balances['USDT_locked'],
+        btc_free=balances['BTC_free'],
+        btc_locked=balances['BTC_locked'],
+        price=price, buys=buys, positions=positions,
         lower=LOWER_PRICE, upper=UPPER_PRICE, num=NUM_GRIDS, invest=INVEST_PER_GRID,
         profit=MIN_PROFIT_PERCENT, interval=CHECK_INTERVAL, logs=logs)
 
@@ -341,8 +346,6 @@ def force_place_grid():
 
 # === Запуск ===
 if __name__ == '__main__':
-    # Запускаем бота в фоновом потоке
     bot_thread = threading.Thread(target=bot_loop, daemon=True)
     bot_thread.start()
-    # Запускаем веб-сервер
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
